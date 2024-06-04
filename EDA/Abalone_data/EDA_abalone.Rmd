@@ -1,0 +1,700 @@
+---
+title: "EDA_abalone"
+author: "Kim Namho"
+date: "2024-06-04"
+output:
+  prettydoc::html_pretty: null
+fontsize: 8pt
+itemsep: 3pt
+parskip: 3pt
+shorttitle: Multivariate statistics
+header-includes: \usepackage{kotex}
+editor_options:
+  markdown:
+    wrap: 72
+resource_files:
+- abalone1.data.txt
+- class2_basic.csv
+- class3_basic.csv
+- class2_pca.csv
+- class3_pca.csv
+---
+
+```{=html}
+<style type="text/css">
+  @font-face {
+    font-family: "Victor Mono", monospace;
+    src: url('https://fonts.googleapis.com/css2?family=Victor+Mono:ital,wght@0,100..700;1,100..700&display=swap') ;
+    font-optical-sizing: auto;
+    font-weight: <weight>;
+    font-style: normal;
+  }
+
+  body {
+    font-family: "Victor Mono", monospace;
+  }
+  
+  @media screen and (max-width: 600px) {
+    body {
+      font-size: 14px;
+    }
+  }
+
+  @media screen and (min-width: 601px) {
+    body {
+      font-size: 18px;
+    }
+  }
+</style>
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(skimr) # summary data package
+library(corrplot) # Heat map of cor mat package
+library(e1071) # Skewness & SVM package
+library(GGally) # ggpairs package
+library(factoextra) # PCA package
+library(gridExtra) # Arrange plots package
+library(flextable) # table package
+library(car) # VIF package
+```
+
+본 문서에서는 다음과 같은 패키지를 활용합니다.
+
+-   skimr : Data Summary
+
+-   corrplot : Heat map of correlation matrix
+
+-   e1071 : Skewness
+
+-   GGally : ggpairs
+
+-   factoextra : PCA
+
+-   gridExtra : Arrange plots
+
+-   tidyverse : data handling
+
+-   flextable : flextable
+
+-   car : VIF
+
+```{r include=FALSE}
+setwd("/Users/nam0_k/Desktop/Git_repo/Machine-Learning/EDA/Abalone_data/") # check directory
+```
+
+```{r message=FALSE, warning=FALSE}
+abalone <- read_csv("abalone1.data.txt", col_names = T)
+glimpse(abalone)
+```
+
+## 각 변수 정보 및 기본 통계량
+
+-   Sex: 성별 (M: 수컷, F: 암컷, I: infant) type: categorical
+
+-   Length: 길이(mm) type: continuous
+
+-   Diameter: 지름(mm) type: continuous
+
+-   Height: 높이(mm) type: continuous
+
+-   Whole weight: 총 무게(grams) type: continuous
+
+-   Shucked weight: 껍데기를 벗긴 무게(grams) type: continuous
+
+-   Viscera weight: 내장 무게(grams) type: continuous
+
+-   Shell weight: 껍데기 무게(grams) type: continuous
+
+-   Rings: 수명 type: integer
+
+```{r}
+# skim 함수를 사용하여 데이터 생성
+skim(abalone) |> 
+  select(-contains("character.min"), -contains("character.max"), 
+         -contains("character.empty"), -contains("character.n_unique"), 
+         -contains("character.whitespace"), -contains("complete_rate"),
+         -contains("skim_type"), -contains("numeric.hist")) |> 
+  flextable() |> 
+  highlight(i = 4, j = 5) |> 
+  autofit()
+
+
+```
+
+직접적인 결측치는 없지만, Height의 최소값이 0인 것과 전체적으로 데이터가 치우친 게 눈에 띈다.
+
+#### 결측치 및 이상치 처리
+
+```{r}
+abalone |> 
+  filter(Height == 0) |> 
+  flextable() |> 
+  highlight(j = 4) |> 
+  autofit()
+```
+
+결측치에 해당하는 observation의 데이터들이 대체적으로 Infant의 평균에 위치 하므로 평균값으로 대체하는 것이 타당하다고 여겨짐
+
+```{r}
+abalone |> 
+  group_by(Sex) |> 
+  summarise(mean_height = mean(Height)) |> 
+  flextable() |> 
+  highlight(i = 2) |> 
+  autofit()
+
+# 평균값 대체
+ind <- which(abalone$Height == 0)
+abalone$Height[ind] <- rep(.1079955, 2)
+```
+
+```{r message=FALSE, warning=FALSE}
+abalone |>
+  ggpairs(mapping = aes(color = Sex, alpha = 0.5),
+          upper = list(continuous = wrap("points", size = .5, alpha = 0.5)), 
+          lower = list(continuous = wrap("points", size = .5, alpha = 0.5)),
+          diag = list(continuous = wrap("barDiag", bins = 15, alpha = 0.5)),
+          columnLabels = c("Sex", "Length", "Diameter", "Height", "Whole", "Shucked", "Viscera", "Shell", "Rings"))
+```
+
+Height 열에 이상치가 존재하는 것처럼 보이고, 처리가 필요해 보인다.
+
+```{r}
+ggplot(mapping = aes(x = Height, y = Rings), data = abalone)+
+  geom_point()
+```
+
+추세에서 많이 벗어난 큰 값들은 이상치를 제거해주는게 좋아보인다.
+
+```{r}
+abalone <- abalone |> filter(Height < .3)
+```
+
+```{r}
+abalone |> 
+  select_if(is.numeric) |> 
+  summarise_all(list(skewness = skewness)) |>  ## e1071의 skewness
+  gather(Features, Skewness) |>  # tidyr의 gather
+  arrange(desc(Skewness)) |> 
+  flextable() |> 
+  highlight(j = 2) |> 
+  autofit()
+```
+
+데이터 전체적으로 치우침이 존재한다.
+
+### EDA
+
+#### Sex
+
+성별 간의 나이 분포 차이가 크다면, 무게나 크기와 같은 변수에 나이 변수가 영향을 더 많이 끼칠테니, 필요에 따라서 나이 변수의 영향을 제거한 뒤 잔차를 활용해야할 수도 있다. 따라서 성별 간의 나이 분포를 우선 보는 것이 필요하다.
+
+```{r}
+ggplot(abalone, aes(x = Sex, y = Rings, fill = Sex)) +
+  geom_boxplot() +
+  scale_fill_brewer(palette = "Pastel1") +
+  theme_minimal() +
+  labs(title = "Boxplot of Rings by Sex",
+       x = "Sex",
+       y = "Rings")
+
+```
+
+```{r}
+abalone |> 
+  group_by(Sex) |> 
+  summarise(count = n(),
+    mean = mean(Rings, na.rm = TRUE),
+    median = median(Rings, na.rm = TRUE),
+    sd = sd(Rings, na.rm = TRUE)) |> 
+  flextable() |> 
+  highlight(i = c(1, 3), j = c(3, 5)) |> 
+  autofit()
+```
+
+남녀 범주 별로 Rings에 대한 차이가 없어 보인다. 단, 남자 데이터의 양이 비교적 크기 때문에, 범주 간의 비교가 필요할 때는 Histogram 보다는 Density plot을 활용하는 것이 좋아 보인다.
+
+#### Length
+
+```{r}
+# 첫 번째 플롯: 히스토그램
+p1 <- ggplot(abalone, aes(x = Length)) +
+  geom_histogram(fill = "4", color = "black", bins = 10) +
+  theme_minimal() +
+  labs(title = "Histogram of Length",
+       x = "Length",
+       y = "Frequency")
+
+# 두 번째 플롯: 박스 플롯
+p2 <- ggplot(abalone, aes(y = Length)) +
+  geom_boxplot(fill = "4", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Length",
+       y = "Length") +
+  coord_flip()
+
+# 두 개의 플롯을 한 그리드에 배치
+grid.arrange(p1, p2, ncol = 2)
+
+summary(abalone$Length)
+```
+
+이상치라기엔 작은 개체의 데이터로 보인다.
+
+#### Height
+
+```{r}
+# 첫 번째 플롯: 히스토그램
+p1 <- ggplot(abalone, aes(x = Height)) +
+  geom_histogram(fill = "4", color = "black", bins = 10) +
+  theme_minimal() +
+  labs(title = "Histogram of Height",
+       x = "Height",
+       y = "Frequency")
+
+# 두 번째 플롯: 박스 플롯
+p2 <- ggplot(abalone, aes(y = Height)) +
+  geom_boxplot(fill = "4", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Height",
+       y = "Height") +
+  coord_flip()
+
+# 두 개의 플롯을 한 그리드에 배치
+grid.arrange(p1, p2, ncol = 2)
+summary(abalone$Height)
+```
+
+#### Diameter
+
+```{r}
+# 첫 번째 플롯: 히스토그램
+p1 <- ggplot(abalone, aes(x = Diameter)) +
+  geom_histogram(fill = "4", color = "black", bins = 10) +
+  theme_minimal() +
+  labs(title = "Histogram of Diameter",
+       x = "Diameter",
+       y = "Frequency")
+
+# 두 번째 플롯: 박스 플롯
+p2 <- ggplot(abalone, aes(y = Diameter)) +
+  geom_boxplot(fill = "4", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Diameter",
+       y = "Diameter") +
+  coord_flip()
+
+# 두 개의 플롯을 한 그리드에 배치
+grid.arrange(p1, p2, ncol = 2)
+summary(abalone$Diameter)
+```
+
+```{r}
+abalone |> 
+    filter(Length < 0.1 | Diameter < 0.1 | Height < 0.01) |> 
+  flextable() |> 
+  autofit()
+```
+
+이상치라기엔 전체적으로 작은 개체의 데이터라고 보인다.
+
+```{r}
+# Density plot function
+plot_density <- function(data, weight_var, fill_var) {
+  ggplot(data, aes(x = !!sym(weight_var), fill = !!sym(fill_var))) +
+    geom_density(alpha = 0.6) +
+    theme_minimal() +
+    labs(title = paste("Density of", weight_var, "by", fill_var),
+         x = weight_var,
+         y = "Density")
+}
+```
+
+Density를 출력하는 함수를 선언해준다.
+
+```{r}
+#  Density plot 그리기
+p1 <- plot_density(abalone, "Length", "Sex")
+p2 <- plot_density(abalone, "Diameter", "Sex")
+p3 <- plot_density(abalone, "Height", "Sex")
+grid.arrange(p1, p2, p3, ncol = 2)
+```
+
+데이터의 밀도가 전체적으로 성별에 영향을 미치지 않는 것으로 보이고, 따라서 앞선 세 개의 데이터로 성별을 예측하거나 분류하기에 어려움이 있다고 보인다.
+
+#### Whole weight
+
+```{r}
+# 첫 번째 플롯: 히스토그램
+p1 <- ggplot(abalone, aes(x = Whole_weight)) +
+  geom_histogram(fill = "4", color = "black", bins = 10) +
+  theme_minimal() +
+  labs(title = "Histogram of Whole weight",
+       x = "Whole weight",
+       y = "Frequency")
+
+# 두 번째 플롯: 박스 플롯
+p2 <- ggplot(abalone, aes(y = Whole_weight)) +
+  geom_boxplot(fill = "4", color = "black") +
+  theme_minimal() +
+  labs(title = "Distribution of Whole weight",
+       y = "Whole weight") +
+  coord_flip()
+
+# 두 개의 플롯을 한 그리드에 배치
+grid.arrange(p1, p2, ncol = 2)
+
+summary(abalone$Whole_weight) # min max의 차이가 크다.
+```
+
+데이터의 평균에 벗어나는 큰 값이 보이고, 나이가 많은 데이터인지 성별이 서로 다른 데이터인지 확인이 필요해보인다.
+
+```{r}
+abalone |> 
+    filter(Whole_weight > 2.5) |> 
+  flextable() |> 
+  highlight(j = 5) |> 
+  autofit()
+```
+
+무게가 큰 데이터가 남성 데이터라는 보장이 없다. 10개의 데이터 중 5개가 남성 5개가 여성이다. 또한, Rings의 경우 11 이상의 데이터로 10 정도 이상 일때 무게가 무거워 지는 시기인 것으로 추측되는 자료를 얻을 수 있다.
+
+```{r}
+# Apply function
+p1 <- plot_density(abalone, "Whole_weight", "Sex")
+p2 <- plot_density(abalone, "Shucked_weight", "Sex")
+p3 <- plot_density(abalone, "Viscera_weight", "Sex")
+p4 <- plot_density(abalone, "Shell_weight", "Sex")
+
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+무게도 전체적으로 성별의 차이가 없고, 우리가 가진 변수들로 성별을 예측하기는 어려울 것 같다는 결론을 내릴 수 있다.
+
+##### 무게의 차이에 대한 정보
+
+-   Whole weight : 전체 무게
+
+-   Shucked weight (껍질 벗긴 무게): 전복의 고기 부분의 무게
+
+-   Viscera weight (내장 무게): 전복의 내장 무게 (출혈 후)
+
+-   Shell weight (껍질 무게): 건조 후의 껍질 무게
+
+    따라서, Whole - (Shucked + Viscera + Shell) \> 0 임을 만족해야 한다는 정보를 얻을 수 있으므로, 다음의 정보를 확인해보는 것이 필요하다.
+
+```{r}
+diff <- abalone |> 
+  mutate(weight_diff = Whole_weight - (Shell_weight + Shucked_weight + Viscera_weight))
+
+summary(diff$weight_diff)
+
+diff |> 
+    filter(weight_diff < 0)
+```
+
+0보다 값이 작은 데이터가 155건이나 있고, 심지어 그 크기도 큰 편이다.
+
+```{r}
+abalone |> 
+  filter(Whole_weight < Shell_weight | Whole_weight < Shucked_weight | Whole_weight < Viscera_weight) |> 
+  flextable() |> 
+	highlight(j = 5) |> 
+	highlight(i = c(1,2,3,4), j = 6) |>
+	highlight(i = 5, j = 8) |> 
+  autofit()
+```
+
+해당되는 데이터 중 특정 무게가 전체 무게보다 큰 데이터들은 문제가 있어보이니, 이 데이터들의 경우 이상치로 판단하고 제거해줍니다.
+
+```{r}
+abalone <- abalone |> 
+  filter(!(Whole_weight < Shell_weight | Whole_weight < Shucked_weight | Whole_weight < Viscera_weight))
+```
+
+그 외의 데이터는 자세한 데이터 수집 경로 및 측정 오차에 대한 정보가 없으므로, 조작 없이 사용하도록 합니다.
+
+```{r}
+dim(abalone)
+```
+
+Height 열의 이상치 2개와 무게의 차이의 이상치 5개를 제거하여 총 7개의 데이터를 제거해주었습니다.
+
+#### Heatmap of correlation matrix
+
+```{r}
+# Heat map of correlation matrix
+corrplot(abalone |> select_if(is.numeric) |> cor(),
+  insig = "blank",
+  tl.cex = .8, # 텍스트 크기
+  tl.col = "black",
+  method = "color",
+  order = "hclust",
+  addCoef.col = "black", # 계수 색상
+  number.cex = .8, # 계수 텍스트 크기
+  type = "full", # 모두 표시
+  is.corr = F # 상관 행렬이 input이기 때문에 값의 변화는 없음.
+)
+```
+
+피쳐 간의 높은 상관계수가 눈에 띄고, 특히 Length 와 Diameter 간의 상관관계와 무게들 간의 상관관계가 높은 것을 확인할 수 있다.
+
+```{r message=FALSE, warning=FALSE}
+sex <- abalone$Sex
+
+abalone |> 
+  select(where(is.numeric)) |> 
+  ggpairs(
+    mapping = aes(color = sex, alpha = 0.5),
+    upper = list(continuous = wrap("points", size = .5, alpha = 0.5)),
+    lower = list(continuous = wrap("points", size = .5, alpha = 0.5)),
+    diag = list(continuous = wrap("densityDiag", alpha = 0.5)),
+    columnLabels = c("Length", "Diameter", "Height", "Whole", "Shucked", "Viscera", "Shell", "Rings")
+  )
+```
+
+-   EDA의 결과
+
+    1.  성별에 따른 차이가 보이지 않는다.
+    2.  무게는 제곱에 비례하므로 큰 개체일수록 무게가 quadratic하게 크게 측정된다.
+    3.  변수 간의 다중공선성이 의심된다.
+
+#### Pairwise plot
+
+```{r}
+plot_with_loess <- function(df, x_var, y_var = "Rings") {
+  ggplot(df, aes_string(x = x_var, y = y_var)) +
+    geom_point(size = .5, alpha = .6) +
+    geom_smooth(method = "loess") +
+    scale_y_continuous(breaks = seq(min(df[[y_var]]), max(df[[y_var]]), by = 5)) +
+    theme_minimal()
+}
+```
+
+```{r}
+p1 <- plot_with_loess(abalone, "Length")
+p2 <- plot_with_loess(abalone, "Diameter")
+p3 <- plot_with_loess(abalone, "Height")
+p4 <- plot_with_loess(abalone, "Whole_weight")
+p5 <- plot_with_loess(abalone, "Shell_weight")
+p6 <- plot_with_loess(abalone, "Shucked_weight")
+p7 <- plot_with_loess(abalone, "Viscera_weight")
+
+grid.arrange(p1, p2, p3, p4, p5, p6, p7, ncol = 3)
+```
+
+-   Length와 Diameter의 plot이 상당히 유사해 보인다.
+
+-   Weight 중에는 Shell weight이 가장 유용할 것으로 보인다.
+
+-   전체적으로 5 \~ 12 사이에서는 Rings의 경향성 파악이 가능할 것으로 보인다.
+
+#### 범주 데이터 처리
+
+```{r}
+ggplot(abalone, aes(x = Sex, y = Rings, fill = Sex)) +
+  geom_boxplot() +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(breaks = seq(0, 30, by = 5))
+```
+
+앞서 보았듯이 Rings와 Sex 간에는 유의미한 관계가 없는 것으로 보이므로 Infant 열의 정보만을 남겨주도록 한다.
+
+```{r}
+abalone_s <- abalone |>  
+  mutate(SexInfant = ifelse(Sex == "I", 1, 0)) |> 
+  select(-Sex)
+
+head(abalone_s) |> 
+  flextable() |> 
+  autofit()
+  
+```
+
+Infant의 경우 나이에 대한 직접적인 정보를 가지고 있다는 것이 유의할 점이다. 단, 우리의 목표는 Rings에 대한 예측이므로 가지고 있는 데이터를 모두 활용하는 쪽으로 선택했다.
+
+#### VIF를 통한 다중공선성 테스트
+
+VIF 테스트는 R의 car library 함수에서 제공 중에 있어서, 회귀 모델에 적합시키면 VIF의 값이 출력된다. 본 문서에서는 자세한 결과는 기술하지 않고, 요약에 대한 부분만을 언급하도록 하겠습니다.
+
+-   Whole 에 대한 영향도 Shuked \> Shell \> Viscera 순으로 높다.
+
+-   Weight의 어떤 변수를 제거해도 Length와 Diameter의 VIF가 낮아지지 않는다.
+
+결과적으로 단위가 비슷한 feature간의 VIF값이 높으므로, 해석의 용이성을 위해 단위가 서로 같은 것끼리 PCA를 진행하는 것이 좋아보입니다. 따라서 Length와 Diameter, Height에 대한 PCA와 Whole, Shucked, Viscera, Shell에 대한 PCA로 다중공선성이 일으키는 문제에 대해서 해결하고자 합니다.
+
+#### Rings 데이터의 분류
+
+```{r}
+summary(abalone$Rings)
+
+abalone |> 
+  ggplot(aes(x = Rings)) +
+  geom_boxplot(fill = "4", color = "black") +
+  theme_minimal() +
+  labs(
+    title = "Frequency of Rings",
+    x = "Rings",
+    y = "Frequency"
+  )
+```
+
+분류를 2개로 나누는 경우는 치우친 데이터의 특성상 중앙값을 기준으로 분류하는 것이 좋아보입니다. 또한 여러 개의 집단으로 분류하는 경우 1세에서 5세까지는 0, 6세에서 12세까지는 1, 13세에서 30세까지는 2로 분류합니다. (앞선 pair wise plot에서의 예측 가능성을 반영한 분류입니다.)
+
+```{r}
+abalone |> 
+  select(Rings) |> 
+  group_by(Rings) |> 
+  summarise(count = n()) |> 
+  arrange(desc(count))
+```
+
+모든 Rings의 값은 정수값이므로 분류는 정수값을 기준으로 진행하도록 하겠습니다.
+
+##### 두 집단 분류
+
+```{r}
+class2 <- abalone_s |> 
+  mutate(Rings = case_when(
+    Rings %in% 1:9 ~ 0,
+    Rings %in% 10:30 ~ 1
+  ))
+
+write_csv(class2, "class2_basic.csv")
+```
+
+##### 세 집단 분류
+
+```{r}
+class3 <- abalone_s |> 
+  mutate(Rings = case_when(
+    Rings %in% 1:5 ~ 0,
+    Rings %in% 6:12 ~ 1,
+    Rings %in% 13:30 ~ 2
+  ))
+
+write_csv(class3, "class3_basic.csv")
+```
+
+두 집단 분류의 경우, 이미 Infant 정보가 있기에 유의미하지 않을 수도 있습니다. 또한 5 \~ 12의 Rings가 선형관계를 잘 설명할 수 있으니, 세 집단의 분류도 함께 진행해주겠습니다.
+
+```{r}
+class2 |> 
+  select(Rings) |> 
+  group_by(Rings) |> 
+  summarise(count = n()) |> 
+  arrange(desc(count)) |> 
+  flextable() |> 
+  autofit()
+
+class3 |> 
+  select(Rings) |> 
+  group_by(Rings) |> 
+  summarise(count = n()) |> 
+  arrange(desc(count)) |> 
+  flextable() |> 
+  autofit()
+```
+
+목표했던 분류가 잘 이루어졌음을 볼 수 있습니다.
+
+### PCA
+
+```{r}
+abalone_pca <- class2
+# abalone_pca <- class3
+```
+
+class에 따라서 주석을 해제하는 방식으로 진행하도록 한다.
+
+#### LDH PCA
+
+```{r}
+ld_pca <- princomp(abalone_pca[, c("Length", "Diameter", "Height")])
+summary(ld_pca)
+
+screeplot(ld_pca, type = "line", main = "Scree Plot of PCA")
+```
+
+높은 상관관계로 알 수 있듯이 PCA의 결과 하나의 주성분 만으로도 충분히 많은 분산을 설명할 수 있습니다.
+
+```{r}
+abalone_pca$LD_PC1 <- ld_pca$scores[, 1]
+
+
+abalone_pca <- abalone_pca |> 
+  select(-c("Length", "Diameter", "Height"))
+
+head(abalone_pca)
+```
+
+PCA의 결과를 데이터에 저장해주고, 기존의 Length, Diameter, Height의 열은 제거해줍니다.
+
+#### Weight PCA
+
+```{r}
+weight_pca <- princomp(abalone_pca[, c("Whole_weight", "Shucked_weight", "Viscera_weight", "Shell_weight")])
+summary(weight_pca)
+
+
+# Scree plot을 그립니다.
+screeplot(weight_pca, type = "line", main = "Scree Plot of PCA")
+```
+
+마찬가지로, 높은 상관성 답게 적은 주성분으로 거의 모든 분산이 설명이 가능합니다. 최대한 적은 데이터의 손실을 위해 두 개의 주성분을 이용해주도록 하겠습니다.
+
+```{r}
+abalone_pca$W_PC1 <- weight_pca$scores[, 1]
+abalone_pca$W_PC2 <- weight_pca$scores[, 2]
+
+abalone_pca <- abalone_pca |> 
+  select(-c("Whole_weight", "Viscera_weight", "Shucked_weight", "Shell_weight"))
+
+head(abalone_pca)
+
+```
+
+마찬가지로 PCA의 두 주성분을 데이터 프레임에 추가해주고, 기존의 열을 제거해줍니다.
+
+```{r}
+# Heat map of correlation matrix
+corrplot(abalone_pca |> select_if(is.numeric) |> cor(),
+  insig = "blank",
+  tl.cex = .8, # 텍스트 크기
+  tl.col = "black",
+  method = "color",
+  order = "hclust",
+  addCoef.col = "black", # 계수 색상
+  number.cex = .8, # 계수 텍스트 크기
+  type = "full", # 모두 표시
+  is.corr = F # 상관 행렬이 input이기 때문에 값의 변화는 없음.
+)
+```
+
+결과적으로 높은 상관성의 대부분을 해결할 수 있게 되었습니다.
+
+```{r}
+model <- lm(Rings ~ ., data = abalone_pca)
+vif(model)
+```
+
+VIF의 값도 10이 넘어가던 값에서 10 미만으로 해결되었음을 볼 수 있습니다.
+
+```{r}
+write.csv(abalone_pca, "class2_pca.csv")
+```
+
+### 결론
+
+-   EDA를 통해 데이터를 파악하고, 이상치 및 결측치를 제거해주었습니다.
+
+-   다중공선성이 문제될 수 있기 때문에, PCA를 통해서 해결하고자 했습니다.
+
+    1.  2개의 범주로 나눈 "class2_basic.csv"
+    2.  3개의 범주로 나눈 "class3_basic.csv"
+    3.  2개의 범주로 나누고 PCA를 진행한 "class2_pca.csv"
+    4.  3개의 범주로 나누고 PCA를 진행한 "class3_pca.csv"
+
+
